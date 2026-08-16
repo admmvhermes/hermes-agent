@@ -86,6 +86,52 @@ def test_detect_venv_python_excludes_self_and_ancestors(_winp, tmp_path):
         assert cli_main._detect_venv_python_processes() == []
 
 
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_venv_python_reads_expensive_fields_only_for_python_candidates(
+    _winp, tmp_path
+):
+    """A large Windows process table must not query cmdline/cwd for every PID.
+
+    Those fields are individually expensive under Windows process security and
+    made the Desktop preflight exceed its timeout on otherwise healthy hosts.
+    """
+    venv_py = str(tmp_path / "venv" / "Scripts" / "python.exe")
+
+    def candidate_process(pid: int, exe: str, name: str):
+        proc = MagicMock()
+        proc.info = {"pid": pid, "exe": exe, "name": name}
+        return proc
+
+    unrelated = candidate_process(101, r"C:\Windows\System32\notepad.exe", "notepad.exe")
+    candidate = candidate_process(102, venv_py, "python.exe")
+    unrelated.cmdline.side_effect = AssertionError("unrelated cmdline queried")
+    unrelated.cwd.side_effect = AssertionError("unrelated cwd queried")
+    candidate.cmdline.return_value = [venv_py, "-m", "hermes_cli.main", "serve"]
+    candidate.cwd.return_value = str(tmp_path)
+    seen_attrs = []
+    me = MagicMock()
+    me.parents.return_value = []
+
+    def process_iter(attrs):
+        seen_attrs.append(attrs)
+        return iter([unrelated, candidate])
+
+    fake_psutil = types.SimpleNamespace(
+        process_iter=process_iter,
+        Process=lambda *a, **k: me,
+    )
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(
+        sys.modules, {"psutil": fake_psutil}
+    ):
+        assert cli_main._detect_venv_python_processes() == [
+            (102, "python.exe", f"{venv_py} -m hermes_cli.main serve")
+        ]
+
+    assert seen_attrs == [["pid", "exe", "name"]]
+    unrelated.cmdline.assert_not_called()
+    unrelated.cwd.assert_not_called()
+
+
 
 
 # ---------------------------------------------------------------------------

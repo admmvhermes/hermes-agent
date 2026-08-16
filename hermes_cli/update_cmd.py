@@ -3131,7 +3131,11 @@ def _detect_venv_python_processes(
 
     matches: list[tuple[int, str, str]] = []
     try:
-        proc_iter = psutil.process_iter(["pid", "exe", "name", "cmdline", "cwd"])
+        # cmdline/cwd are disproportionately expensive on Windows (each may
+        # cross a process-security boundary).  Read the cheap identity fields
+        # for the whole table, then query expensive fields only for Python-like
+        # candidates that could possibly hold this venv.
+        proc_iter = psutil.process_iter(["pid", "exe", "name"])
     except Exception:
         return []
     for proc in proc_iter:
@@ -3141,19 +3145,35 @@ def _detect_venv_python_processes(
             continue
         pid = info.get("pid")
         exe = info.get("exe")
-        if not exe or pid is None or int(pid) in skip:
+        name = info.get("name") or (Path(exe).name if exe else "")
+        if pid is None or int(pid) in skip:
+            continue
+        name_low = str(name).lower()
+        exe_low = str(exe or "").lower()
+        if not (
+            name_low in {"python.exe", "pythonw.exe", "python", "pythonw", "hermes.exe"}
+            or "python" in name_low
+            or "python" in Path(exe_low).name
+            or exe_low.startswith(venv_prefix)
+        ):
             continue
         try:
-            exe_norm = str(Path(exe).resolve()).lower()
+            exe_norm = str(Path(exe).resolve()).lower() if exe else ""
         except (OSError, ValueError):
-            exe_norm = str(exe).lower()
-        cmdline_raw = " ".join(info.get("cmdline") or [])
+            exe_norm = exe_low
+        try:
+            cmdline_raw = " ".join(proc.cmdline() or [])
+        except Exception:
+            cmdline_raw = ""
         cmdline_low = cmdline_raw.lower()
-        cwd_low = str(info.get("cwd") or "").lower().rstrip(os.sep) + os.sep
+        try:
+            cwd_low = str(proc.cwd() or "").lower().rstrip(os.sep) + os.sep
+        except Exception:
+            cwd_low = os.sep
 
         # Primary match: the executable itself lives under this venv
         # (venv\Scripts\python(w).exe — the desktop backend / gateway case).
-        is_holder = exe_norm.startswith(venv_prefix)
+        is_holder = bool(exe_norm) and exe_norm.startswith(venv_prefix)
         # Fallback: uv/base-interpreter trampolines run a python whose exe is
         # OUTSIDE the venv but which still imports from it and holds its .pyd
         # files. Catch those by what they're running: a cmdline that references
@@ -3166,7 +3186,7 @@ def _detect_venv_python_processes(
                 is_holder = True
         if not is_holder:
             continue
-        name = info.get("name") or Path(exe).name
+        name = name or (Path(exe).name if exe else "python.exe")
         # Return the FULL cmdline: callers match against it (the Desktop
         # preflight's pausable-gateway exemption parses for `gateway run`).
         # Truncating here cut long managed-runtime interpreter paths before
