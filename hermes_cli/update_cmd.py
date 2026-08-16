@@ -3151,10 +3151,26 @@ def _detect_venv_python_processes(
         name_low = str(name).lower()
         exe_low = str(exe or "").lower()
         if not (
-            name_low in {"python.exe", "pythonw.exe", "python", "pythonw", "hermes.exe"}
+            name_low in {
+                "python.exe",
+                "pythonw.exe",
+                "python",
+                "pythonw",
+                "hermes.exe",
+                "uv.exe",
+                "uv",
+                "uvx.exe",
+                "uvx",
+                "py.exe",
+                "py",
+            }
             or "python" in name_low
             or "python" in Path(exe_low).name
             or exe_low.startswith(venv_prefix)
+            # Incomplete psutil identity is ambiguous: preserve the old
+            # fail-safe behavior and inspect cmdline/cwd for this rare case.
+            or not exe
+            or not name
         ):
             continue
         try:

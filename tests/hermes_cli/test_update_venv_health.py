@@ -132,6 +132,45 @@ def test_detect_venv_python_reads_expensive_fields_only_for_python_candidates(
     unrelated.cwd.assert_not_called()
 
 
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_venv_python_keeps_uv_and_incomplete_identity_fallbacks(_winp, tmp_path):
+    """Cheap filtering must retain launchers and ambiguous psutil identities."""
+    venv_py = str(tmp_path / "venv" / "Scripts" / "python.exe")
+
+    def candidate_process(pid: int, exe, name, cmdline, cwd):
+        proc = MagicMock()
+        proc.info = {"pid": pid, "exe": exe, "name": name}
+        proc.cmdline.return_value = cmdline
+        proc.cwd.return_value = cwd
+        return proc
+
+    uv = candidate_process(
+        201,
+        r"C:\Tools\uv.exe",
+        "uv.exe",
+        [r"C:\Tools\uv.exe", "run", venv_py, "-m", "hermes_cli.main", "serve"],
+        str(tmp_path),
+    )
+    incomplete = candidate_process(
+        202,
+        None,
+        "",
+        [venv_py, "-m", "hermes_cli.main", "serve"],
+        str(tmp_path),
+    )
+    me = MagicMock()
+    me.parents.return_value = []
+    fake_psutil = types.SimpleNamespace(
+        process_iter=lambda attrs: iter([uv, incomplete]),
+        Process=lambda *a, **k: me,
+    )
+
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(
+        sys.modules, {"psutil": fake_psutil}
+    ):
+        matches = cli_main._detect_venv_python_processes()
+
+    assert [pid for pid, _name, _cmdline in matches] == [201, 202]
 
 
 # ---------------------------------------------------------------------------
